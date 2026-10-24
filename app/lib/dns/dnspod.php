@@ -400,6 +400,7 @@ class dnspod implements DnsInterface
     private function convertLineCode($line)
     {
         $convert_dict = ['default' => '0', 'unicom' => '10=1', 'telecom' => '10=0', 'mobile' => '10=3', 'edu' => '10=2', 'oversea' => '3=0', 'btvn' => '10=22', 'search' => '80=0', 'internal' => '7=0'];
+        if ($line === null) return $line;
         if (array_key_exists($line, $convert_dict)) {
             return $convert_dict[$line];
         }
@@ -409,6 +410,7 @@ class dnspod implements DnsInterface
     private function convertType($type)
     {
         $convert_dict = ['REDIRECT_URL' => '显性URL', 'FORWARD_URL' => '隐性URL'];
+        if ($type === null) return $type;
         if (array_key_exists($type, $convert_dict)) {
             return $convert_dict[$type];
         }
@@ -418,6 +420,7 @@ class dnspod implements DnsInterface
     private function convertTypeId($type)
     {
         $convert_dict = ['显性URL' => 'REDIRECT_URL', '隐性URL' => 'FORWARD_URL'];
+        if ($type === null) return $type;
         if (array_key_exists($type, $convert_dict)) {
             return $convert_dict[$type];
         }
