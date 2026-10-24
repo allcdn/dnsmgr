@@ -2695,7 +2695,7 @@ function confirmBatchCfOptimized(){
     $('#cfOptimizedDnsGroupArea').hide();
     $('#cfOptimizedSingleDnsArea').hide();
     $('#cfOptimizedExistingRecord').show().removeClass('alert-warning alert-info').addClass(failCount > 0 ? 'alert-warning' : 'alert-info');
-    if(failCount > 0 && failCount === totalCount){
+    if(failCount > 0 && failCount === batchCfOptimizedData.length){
       $('#cfOptimizedExistingInfo').text('检测失败的主机名将尝试直接添加记录');
     } else if(failCount > 0){
       $('#cfOptimizedExistingInfo').text('部分主机名检测失败，失败的将尝试直接添加。请确认后点击"确认执行"');
@@ -2713,13 +2713,14 @@ function confirmBatchCfOptimized(){
 function preDetectAllHostnames(cnameTarget, dnsDomains, recordType, callback){
   // A/CNAME/ALIAS/AAAA 在同一线路互斥，预检测也匹配全部类型
   var allowedTypes = ['A', 'AAAA', 'CNAME', 'ALIAS'];
-  var detectedCount = 0;
   var totalCount = batchCfOptimizedData.length;
   var modifyList = [], addList = [], failList = [];
   var modifySet = {}, addSet = {};
+  var finishedCount = 0;
 
   function checkDone(){
-    if(detectedCount === totalCount){
+    finishedCount++;
+    if(finishedCount === totalCount){
       callback({modifyList: modifyList, addList: addList, failList: failList, modifySet: modifySet, addSet: addSet});
     }
   }
@@ -2733,7 +2734,7 @@ function preDetectAllHostnames(cnameTarget, dnsDomains, recordType, callback){
     if(!sel && item.targets && item.targets.length > 0){
       sel = {domainId: item.targets[0].domain_id};
     }
-    if(!sel || !sel.domainId){ failList.push(hostname); detectedCount++; if(detectedCount === totalCount) checkDone(); return; }
+    if(!sel || !sel.domainId){ failList.push(hostname); checkDone(); return; }
 
     // 直接从主机名和 DNS 域名计算 record_name（不依赖 targets 中的值，避免误判）
     var dnsDomain = item.dnsDomain || '';
@@ -2744,8 +2745,6 @@ function preDetectAllHostnames(cnameTarget, dnsDomains, recordType, callback){
       recordName = '@';
     }
     if(!recordName) recordName = hostname;
-    detectedCount++;
-
     (function(hn, rn, s){
       // 获取用户选择的线路 value 和 label（label 用于兜底匹配）
       var selLine = (s.line !== undefined && s.line !== null) ? String(s.line) : '';
