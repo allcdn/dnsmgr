@@ -28,7 +28,10 @@ tbody tr>td:nth-child(2){overflow: hidden;text-overflow: ellipsis;white-space: n
   <a href="javascript:searchClear()" class="btn btn-default" title="刷新域名账户列表"><i class="fa fa-refresh"></i> 刷新</a>
   <a href="/optimizeip/opipform/add" class="btn btn-success"><i class="fa fa-plus"></i> 添加</a>
   <a href="/optimizeip/batch" class="btn btn-info"><i class="fa fa-cloud-download"></i> 批量任务</a>
+  <button type="button" class="btn btn-default" id="selectPendingBtn" onclick="selectPendingTasks()"><i class="fa fa-check-square-o"></i> 全选未运行</button>
   <button type="button" class="btn btn-warning" id="batchEditBtn" onclick="openBatchEditDialog()" disabled><i class="fa fa-pencil"></i> 批量修改</button>
+  <button type="button" class="btn btn-success" id="batchRunBtn" onclick="batchRunTasks()" disabled><i class="fa fa-refresh"></i> 批量手动更新</button>
+  <button type="button" class="btn btn-default" id="clearSelectionBtn" onclick="clearTaskSelection()" disabled><i class="fa fa-times"></i> 清空选择</button>
 </form>
 
       <table id="listTable">
@@ -130,6 +133,9 @@ tbody tr>td:nth-child(2){overflow: hidden;text-overflow: ellipsis;white-space: n
 <script src="/static/js/bootstrap-table-page-jump-to-1.21.4.min.js"></script>
 <script src="/static/js/custom.js?v=1006"></script>
 <script>
+var selectedTaskIds = {};
+var batchRunInProgress = false;
+
 $(document).ready(function(){
 	updateToolbar();
 	const pageSizeKey = 'opiplist_pagesize';
@@ -252,32 +258,114 @@ $(document).ready(function(){
 		],
 		onLoadSuccess: function(data) {
 			$('[data-toggle="tooltip"]').tooltip();
-			updateBatchEditButton();
+			var rows = data && data.rows ? data.rows : [];
+			rows.forEach(function(row, index){
+				if(selectedTaskIds[String(row.id)]) {
+					$("#listTable").bootstrapTable('check', index);
+				}
+			});
+			updateBatchActionButtons();
+		},
+		onCheck: function(row) {
+			selectedTaskIds[String(row.id)] = true;
+			updateBatchActionButtons();
+		},
+		onUncheck: function(row) {
+			delete selectedTaskIds[String(row.id)];
+			updateBatchActionButtons();
+		},
+		onCheckAll: function(rows) {
+			(rows || []).forEach(function(row){
+				selectedTaskIds[String(row.id)] = true;
+			});
+			updateBatchActionButtons();
+		},
+		onUncheckAll: function() {
+			$("#listTable").bootstrapTable('getData').forEach(function(row){
+				delete selectedTaskIds[String(row.id)];
+			});
+			updateBatchActionButtons();
 		},
 		onPageChange: function(number, size){
 			setStoredPageSize(pageSizeKey, size);
 		},
 	})
-
-	$("#listTable").on('check.bs.table uncheck.bs.table check-all.bs.table uncheck-all.bs.table', function(){
-		updateBatchEditButton();
-	});
 })
 
-function updateBatchEditButton(){
-	var count = $("#listTable").bootstrapTable('getSelections').length;
-	$("#batchEditBtn").prop('disabled', count === 0).html('<i class="fa fa-pencil"></i> 批量修改' + (count > 0 ? ' (' + count + ')' : ''));
+function getSelectedTaskIds(){
+	return Object.keys(selectedTaskIds).map(function(id){
+		return parseInt(id, 10);
+	}).filter(function(id){
+		return id > 0;
+	});
+}
+
+function updateBatchActionButtons(){
+	var count = getSelectedTaskIds().length;
+	$("#batchEditBtn").prop('disabled', batchRunInProgress || count === 0).html('<i class="fa fa-pencil"></i> 批量修改' + (count > 0 ? ' (' + count + ')' : ''));
+	$("#batchRunBtn").prop('disabled', batchRunInProgress || count === 0).html('<i class="fa fa-refresh"></i> 批量手动更新' + (count > 0 ? ' (' + count + ')' : ''));
+	$("#clearSelectionBtn").prop('disabled', batchRunInProgress || count === 0);
+	$("#selectPendingBtn").prop('disabled', batchRunInProgress);
+}
+
+function selectPendingTasks(){
+	var $btn = $("#selectPendingBtn");
+	$btn.prop('disabled', true);
+	$.ajax({
+		type: 'POST',
+		url: '/optimizeip/tasks/pending_ids',
+		data: {
+			type: $('#searchToolbar select[name=type]').val(),
+			kw: $('#searchToolbar input[name=kw]').val()
+		},
+		dataType: 'json',
+		success: function(res){
+			$btn.prop('disabled', false);
+			if(res.code !== 0){
+				layer.alert(res.msg || '获取未运行任务失败', {icon: 2});
+				return;
+			}
+			var ids = res.data && res.data.ids ? res.data.ids : [];
+			if(ids.length === 0){
+				layer.msg('没有可选择的未运行任务', {icon: 0});
+				return;
+			}
+
+			$("#listTable").bootstrapTable('uncheckAll');
+			selectedTaskIds = {};
+			ids.forEach(function(id){
+				selectedTaskIds[String(id)] = true;
+			});
+			$("#listTable").bootstrapTable('getData').forEach(function(row, index){
+				if(selectedTaskIds[String(row.id)]) {
+					$("#listTable").bootstrapTable('check', index);
+				}
+			});
+			updateBatchActionButtons();
+			layer.msg('已选中 ' + ids.length + ' 个未运行任务，可跨分页批量更新', {icon: 1, time: 2000});
+		},
+		error: function(){
+			$btn.prop('disabled', false);
+			layer.alert('获取未运行任务失败', {icon: 2});
+		}
+	});
+}
+
+function clearTaskSelection(){
+	$("#listTable").bootstrapTable('uncheckAll');
+	selectedTaskIds = {};
+	updateBatchActionButtons();
 }
 
 function openBatchEditDialog(){
-	var selections = $("#listTable").bootstrapTable('getSelections');
-	if(selections.length === 0){
+	var ids = getSelectedTaskIds();
+	if(ids.length === 0){
 		layer.msg('请先选择要修改的任务', {icon: 0});
 		return;
 	}
 	$('#batchEditForm')[0].reset();
 	toggleBatchRemarkInput('keep');
-	$('#batchEditAlert').html('已选择 <strong>' + selections.length + '</strong> 个任务；留空的选项保持不变。');
+	$('#batchEditAlert').html('已选择 <strong>' + ids.length + '</strong> 个任务；留空的选项保持不变。');
 	$('#modal-batch-edit').modal('show');
 }
 
@@ -288,12 +376,11 @@ function toggleBatchRemarkInput(mode){
 }
 
 function submitBatchEdit(){
-	var selections = $("#listTable").bootstrapTable('getSelections');
-	if(selections.length === 0){
+	var ids = getSelectedTaskIds();
+	if(ids.length === 0){
 		layer.msg('请先选择要修改的任务', {icon: 0});
 		return;
 	}
-	var ids = selections.map(function(row){ return row.id; });
 	var data = {
 		ids: ids,
 		line_type: $('#batchEditForm select[name=line_type]').val(),
@@ -320,7 +407,7 @@ function submitBatchEdit(){
 			if(res.code === 0){
 				$('#modal-batch-edit').modal('hide');
 				layer.msg(res.msg || '批量修改成功', {icon: 1, time: 1500});
-				$('#listTable').bootstrapTable('uncheckAll');
+				clearTaskSelection();
 				$('#listTable').bootstrapTable('refresh');
 			}else{
 				layer.alert(res.msg || '批量修改失败', {icon: 2});
@@ -331,6 +418,81 @@ function submitBatchEdit(){
 			layer.alert('批量修改失败', {icon: 2});
 		}
 	});
+}
+
+function batchRunTasks(){
+	var ids = getSelectedTaskIds();
+	if(ids.length === 0){
+		layer.msg('请先选择要更新的任务', {icon: 0});
+		return;
+	}
+	layer.confirm('确定要批量手动更新选中的 ' + ids.length + ' 个任务吗？执行期间请勿关闭页面。', {
+		btn: ['开始更新', '取消']
+	}, function(index){
+		layer.close(index);
+		runTaskBatch(ids);
+	});
+}
+
+function runTaskBatch(ids){
+	var batchSize = 5;
+	var offset = 0;
+	var success = 0;
+	var failed = 0;
+	var skipped = 0;
+	var firstError = '';
+	var ii = layer.msg('正在批量更新 0/' + ids.length + '...', {icon: 16, shade: 0.1, time: 0});
+	batchRunInProgress = true;
+	updateBatchActionButtons();
+
+	function finish(message, icon){
+		batchRunInProgress = false;
+		layer.close(ii);
+		updateBatchActionButtons();
+		$('#listTable').bootstrapTable('refresh');
+		if(message) layer.alert(message, {icon: icon});
+	}
+
+	function requestNext(){
+		var chunk = ids.slice(offset, offset + batchSize);
+		if(chunk.length === 0){
+			var message = '批量手动更新完成：成功 ' + success + ' 个，失败 ' + failed + ' 个';
+			if(skipped > 0) message += '，跳过 ' + skipped + ' 个不存在的任务';
+			if(firstError) message += '<br><br>首个失败原因：' + $('<div>').text(firstError).html();
+			clearTaskSelection();
+			finish(message, failed > 0 ? 0 : 1);
+			return;
+		}
+
+		$.ajax({
+			type: 'POST',
+			url: '/optimizeip/tasks/batch_run',
+			data: {ids: chunk},
+			dataType: 'json',
+			success: function(res){
+				if(res.code !== 0){
+					finish(res.msg || '批量手动更新失败', 2);
+					return;
+				}
+				var data = res.data || {};
+				success += parseInt(data.success || 0, 10);
+				failed += parseInt(data.failed || 0, 10);
+				skipped += parseInt(data.skipped || 0, 10);
+				if(!firstError && data.errors && data.errors.length > 0){
+					firstError = data.errors[0].msg || '';
+				}
+				offset += chunk.length;
+				layer.close(ii);
+				ii = layer.msg('正在批量更新 ' + offset + '/' + ids.length + '...', {icon: 16, shade: 0.1, time: 0});
+				requestNext();
+			},
+			error: function(){
+				finish('批量手动更新请求失败，请检查网络或任务执行状态', 2);
+			}
+		});
+	}
+
+	requestNext();
 }
 
 function setActive(id, active){

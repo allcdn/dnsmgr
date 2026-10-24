@@ -20,8 +20,9 @@ class OptimizeService
     private $change_num = 0;
     private $del_num = 0;
     private $conn;
+    private $quiet;
 
-    public function __construct($ipAddress = null, $ipErrors = null, $conn = null)
+    public function __construct($ipAddress = null, $ipErrors = null, $conn = null, bool $quiet = false)
     {
         if (is_array($ipAddress)) {
             $this->ip_address = $ipAddress;
@@ -30,6 +31,7 @@ class OptimizeService
             $this->ip_errors = $ipErrors;
         }
         $this->conn = $conn;
+        $this->quiet = $quiet;
     }
 
     public static function get_license($api, $key)
@@ -200,26 +202,99 @@ class OptimizeService
                 return false;
             }
 
-            $concurrency = min($this->getConcurrency(), count($list));
-            $accountConcurrency = min($concurrency, $this->getAccountConcurrency());
-            echo '开始执行IP优选任务，共获取到'.count($list).'个待执行任务，并发数'.$concurrency.'，单账户并发数'.$accountConcurrency."\n";
-
-            [$ipCache, $ipErrors] = $this->preloadIpAddress($list);
-            if ($concurrency > 1 && $this->canRunConcurrently()) {
-                $this->executeConcurrent($list, $ipCache, $ipErrors, $concurrency, $accountConcurrency);
-            } else {
-                if ($concurrency > 1) {
-                    echo '未安装 Swoole 扩展，自动降级为串行执行'."\n";
-                }
-                foreach ($list as $row) {
-                    $this->runTaskRow($row, $ipCache, $ipErrors, false);
-                }
-            }
+            $this->executeList($list);
 
             config_set('optimize_ip_time', date("Y-m-d H:i:s"));
             return true;
         } finally {
             $this->releaseExecutionLock($lock);
+        }
+    }
+
+    /**
+     * 手动批量执行选中的任务，不修改任务启用状态。
+     */
+    public function execute_selected(array $ids): array
+    {
+        $ids = array_values(array_unique(array_filter(array_map('intval', $ids), function ($id) {
+            return $id > 0;
+        })));
+        if (empty($ids)) {
+            throw new Exception('请选择要更新的任务');
+        }
+
+        $lock = $this->acquireExecutionLock();
+        if (!$lock) {
+            throw new Exception('CF优选IP任务正在执行，请稍后再试');
+        }
+
+        try {
+            $list = Db::name('optimizeip')->alias('T')
+                ->leftJoin('domain D', 'T.did = D.id')
+                ->leftJoin('account A', 'D.aid = A.id')
+                ->whereIn('T.id', $ids)
+                ->field('T.*,A.id aid,A.type provider')
+                ->order('T.id', 'asc')
+                ->select()->toArray();
+
+            if (!empty($list)) {
+                $this->executeList($list);
+            }
+
+            $statusRows = Db::name('optimizeip')
+                ->whereIn('id', $ids)
+                ->field('id,status,errmsg')
+                ->select()->toArray();
+            $success = 0;
+            $failed = 0;
+            $errors = [];
+            foreach ($statusRows as $row) {
+                if (intval($row['status']) === 1) {
+                    $success++;
+                } else {
+                    $failed++;
+                    $errors[] = [
+                        'id' => intval($row['id']),
+                        'msg' => trim((string)($row['errmsg'] ?? '')) ?: '任务执行失败',
+                    ];
+                }
+            }
+
+            return [
+                'total' => count($list),
+                'success' => $success,
+                'failed' => $failed,
+                'skipped' => count($ids) - count($list),
+                'errors' => $errors,
+            ];
+        } finally {
+            $this->releaseExecutionLock($lock);
+        }
+    }
+
+    private function executeList(array $list)
+    {
+        $concurrency = min($this->getConcurrency(), count($list));
+        $accountConcurrency = min($concurrency, $this->getAccountConcurrency());
+        $this->output('开始执行IP优选任务，共获取到'.count($list).'个待执行任务，并发数'.$concurrency.'，单账户并发数'.$accountConcurrency);
+
+        [$ipCache, $ipErrors] = $this->preloadIpAddress($list);
+        if ($concurrency > 1 && $this->canRunConcurrently()) {
+            $this->executeConcurrent($list, $ipCache, $ipErrors, $concurrency, $accountConcurrency);
+        } else {
+            if ($concurrency > 1) {
+                $this->output('未安装 Swoole 扩展，自动降级为串行执行');
+            }
+            foreach ($list as $row) {
+                $this->runTaskRow($row, $ipCache, $ipErrors, false);
+            }
+        }
+    }
+
+    private function output(string $message)
+    {
+        if (!$this->quiet) {
+            echo $message."\n";
         }
     }
 
@@ -338,24 +413,24 @@ class OptimizeService
     {
         $conn = null;
         $broken = false;
-        $taskService = new self($ipCache, $ipErrors);
+        $taskService = new self($ipCache, $ipErrors, null, $this->quiet);
 
         try {
             if ($usePool) {
                 $conn = NewDb::pool();
-                $taskService = new self($ipCache, $ipErrors, $conn);
+                $taskService = new self($ipCache, $ipErrors, $conn, $this->quiet);
             }
             $result = $taskService->execute_one($row);
             $taskService->updateTaskStatus($row['id'], ['status' => 1, 'errmsg' => null, 'updatetime' => date('Y-m-d H:i:s')]);
-            echo '优选任务'.$row['id'].'执行成功：'.$result."\n";
+            $this->output('优选任务'.$row['id'].'执行成功：'.$result);
         } catch (\Throwable $e) {
             try {
                 $taskService->updateTaskStatus($row['id'], ['status' => 2, 'errmsg' => $e->getMessage(), 'updatetime' => date('Y-m-d H:i:s')]);
             } catch (\Throwable $dbError) {
                 $broken = true;
-                echo '优选任务'.$row['id'].'状态写入失败：'.$dbError->getMessage()."\n";
+                $this->output('优选任务'.$row['id'].'状态写入失败：'.$dbError->getMessage());
             }
-            echo '优选任务'.$row['id'].'执行失败：'.$e->getMessage()."\n";
+            $this->output('优选任务'.$row['id'].'执行失败：'.$e->getMessage());
         } finally {
             if ($conn) {
                 NewDb::release($conn, $broken);

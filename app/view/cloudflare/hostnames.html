@@ -280,6 +280,12 @@
         </div>
         <div class="form-group" style="margin-top:12px;">
           <label>目标值 <span style="color:#d9534f;">*</span></label>
+          <div style="margin-bottom:10px;padding:10px;background:#f7f9fb;border:1px solid #e5e9ef;border-radius:4px;">
+            <label for="cfOptimizedTaskSearch" style="font-size:13px;margin-bottom:6px;">从 CF优选IP任务搜索目标</label>
+            <input type="text" id="cfOptimizedTaskSearch" class="form-control input-sm" placeholder="输入域名或备注，至少 2 个字符" autocomplete="off">
+            <p class="help-block" style="margin:6px 0 0;font-size:12px;">任务较多时不会一次性列出，输入关键字后最多显示 20 条匹配任务。</p>
+            <div id="cfOptimizedTaskResults" style="margin-top:8px;"></div>
+          </div>
           <div id="cfOptimizedTargetList"></div>
         </div>
         <div id="cfOptimizedDnsGroupArea" style="display:none;">
@@ -2100,49 +2106,16 @@ var cfOptimizedTargets = [
   {value: 'store.ubi.com', label: 'Ubisoft'},
   {value: 'staticdelivery.nexusmods.com', label: 'NexusMods'}
 ];
-var cfOptimizedApiTargets = [];
-
-function loadCfOptimizedTargetsFromApi(callback){
-  cfOptimizedApiTargets = [];
-  $.ajax({
-    type: 'POST',
-    url: '/optimizeip/opiplist/data',
-    data: {offset: 0, limit: 100, type: 1, status: null, kw: ''},
-    dataType: 'json',
-    success: function(res){
-      if(res.rows && res.rows.length > 0){
-        for(var i = 0; i < res.rows.length; i++){
-          var row = res.rows[i];
-          if(row.cdn_type == 1 && row.active == 1 && row.rr && row.domain){
-            var targetValue = row.rr + '.' + row.domain;
-            var targetLabel = row.remark || (row.rr + '.' + row.domain);
-            cfOptimizedApiTargets.push({value: targetValue, label: targetLabel});
-          }
-        }
-      }
-      if(callback) callback();
-    },
-    error: function(){
-      if(callback) callback();
-    }
-  });
-}
+var cfOptimizedTargetSearchSeq = 0;
+var cfOptimizedTargetSearchTimer = null;
 
 function renderCfOptimizedTargetOptions(){
-  var allTargets = cfOptimizedApiTargets.concat(cfOptimizedTargets);
-  var html = '';
-  if(cfOptimizedApiTargets.length > 0){
-    html += '<div style="font-size:12px;color:#888;margin-bottom:6px;padding-bottom:4px;">— 来自 CF优选IP任务 —</div>';
-  }
-  for(var i = 0; i < allTargets.length; i++){
-    var opt = allTargets[i];
-    var isApi = i < cfOptimizedApiTargets.length;
-    if(!isApi && i === cfOptimizedApiTargets.length && cfOptimizedApiTargets.length > 0){
-      html += '<div style="border-top:1px solid #eee;margin:8px 0 4px;"></div>';
-    }
+  var html = '<div style="font-size:12px;color:#888;margin-bottom:6px;padding-bottom:4px;">— 内置目标 —</div>';
+  for(var i = 0; i < cfOptimizedTargets.length; i++){
+    var opt = cfOptimizedTargets[i];
     html += '<div class="radio" style="margin:0 0 8px;">';
     html += '<label><input type="radio" name="cfOptimizedTarget" value="' + htmlEscape(opt.value) + '"' + (i === 0 ? ' checked' : '') + '> ';
-    html += '<strong>' + htmlEscape(opt.value) + '</strong> <span style="color:#888;font-size:12px;">(' + htmlEscape(opt.label) + ')' + (isApi ? ' <i class="fa fa-database" style="color:#337ab7;font-size:10px;" title="来自优选任务"></i>' : '') + '</span>';
+    html += '<strong>' + htmlEscape(opt.value) + '</strong> <span style="color:#888;font-size:12px;">(' + htmlEscape(opt.label) + ')</span>';
     html += '</label></div>';
   }
   html += '<div class="radio" style="margin:4px 0 0;padding-top:8px;border-top:1px solid #eee;">';
@@ -2163,6 +2136,54 @@ function renderCfOptimizedTargetOptions(){
   });
 }
 
+function renderCfOptimizedTaskSearchResults(rows){
+  if(!rows || rows.length === 0){
+    $('#cfOptimizedTaskResults').html('<div style="font-size:12px;color:#999;">没有匹配的优选任务</div>');
+    return;
+  }
+  var html = '<div style="font-size:12px;color:#888;margin-bottom:6px;">— 匹配的 CF优选IP任务（最多 20 条） —</div>';
+  for(var i = 0; i < rows.length; i++){
+    var row = rows[i];
+    html += '<div class="radio" style="margin:0 0 6px;">';
+    html += '<label><input type="radio" name="cfOptimizedTarget" value="' + htmlEscape(row.value) + '"> ';
+    html += '<strong>' + htmlEscape(row.value) + '</strong> <span style="color:#888;font-size:12px;">(' + htmlEscape(row.label || row.value) + ')</span>';
+    html += '</label></div>';
+  }
+  $('#cfOptimizedTaskResults').html(html);
+  $('#cfOptimizedTaskResults input[name=cfOptimizedTarget]').off('change.cfTaskTarget').on('change.cfTaskTarget', function(){
+    $('#cfOptimizedCustomInput').hide();
+    $('#cfOptimizedRecordType').val('CNAME');
+  });
+}
+
+function searchCfOptimizedTaskTargets(keyword){
+  keyword = $.trim(keyword || '');
+  var seq = ++cfOptimizedTargetSearchSeq;
+  if(keyword.length < 2){
+    $('#cfOptimizedTaskResults').html('<div style="font-size:12px;color:#999;">输入至少 2 个字符开始搜索</div>');
+    return;
+  }
+  $('#cfOptimizedTaskResults').html('<div style="font-size:12px;color:#999;">搜索中...</div>');
+  $.ajax({
+    type: 'POST',
+    url: '/optimizeip/tasks/target_search',
+    data: {kw: keyword},
+    dataType: 'json',
+    success: function(res){
+      if(seq !== cfOptimizedTargetSearchSeq) return;
+      if(res.code !== 0){
+        $('#cfOptimizedTaskResults').html('<div style="font-size:12px;color:#d9534f;">' + htmlEscape(res.msg || '搜索失败') + '</div>');
+        return;
+      }
+      renderCfOptimizedTaskSearchResults(res.data && res.data.rows ? res.data.rows : []);
+    },
+    error: function(){
+      if(seq !== cfOptimizedTargetSearchSeq) return;
+      $('#cfOptimizedTaskResults').html('<div style="font-size:12px;color:#d9534f;">搜索失败，请稍后重试</div>');
+    }
+  });
+}
+
 var cfOptimizedSingleHostname = null;
 var batchCfOptimizedData = [];
 
@@ -2174,6 +2195,10 @@ function resetCfOptimizedState(){
   $('#singleLineArea').hide();
   $('#singleSubLineArea').hide();
   $('#batchCfOptimizedList').html('').hide();
+  $('#cfOptimizedTaskSearch').val('');
+  $('#cfOptimizedTaskResults').html('');
+  cfOptimizedTargetSearchSeq++;
+  clearTimeout(cfOptimizedTargetSearchTimer);
   cfOptimizedSingleHostname = null;
   for(var ci = 0; ci < batchCfOptimizedData.length; ci++){ delete batchCfOptimizedData[ci]._dnsSel; }
 }
@@ -2181,6 +2206,18 @@ function resetCfOptimizedState(){
 $(document).ready(function(){
   $('#modal-cf-optimized').on('hidden.bs.modal', function(){
     resetCfOptimizedState();
+  });
+  $(document).on('input.cfOptimizedTaskSearch', '#cfOptimizedTaskSearch', function(){
+    clearTimeout(cfOptimizedTargetSearchTimer);
+    var keyword = $(this).val();
+    if($.trim(keyword).length < 2){
+      cfOptimizedTargetSearchSeq++;
+      $('#cfOptimizedTaskResults').html('<div style="font-size:12px;color:#999;">输入至少 2 个字符开始搜索</div>');
+      return;
+    }
+    cfOptimizedTargetSearchTimer = setTimeout(function(){
+      searchCfOptimizedTaskTargets(keyword);
+    }, 300);
   });
   $(document).on('input.cfOptimizedTarget', '#cfOptimizedCustomValue', function(){
     if($('input[name=cfOptimizedTarget]:checked').val() !== '_custom') return;
@@ -2252,9 +2289,7 @@ function batchCfOptimized(){
 
   $('#cfOptimizedModalTitle').text('批量 CF 优选解析');
   $('#cfOptimizedConfirmBtn').text('开始处理');
-
-  loadCfOptimizedTargetsFromApi(function(){
-    renderCfOptimizedTargetOptions();
+  renderCfOptimizedTargetOptions();
 
   // 先获取所有主机名的 DNS 域名信息，按 DNS 域名分组
   batchCfOptimizedData = [];
@@ -2291,7 +2326,6 @@ function batchCfOptimized(){
       checkGroupDone();
     });
   });
-  });
 }
 
 // 单个入口
@@ -2300,18 +2334,15 @@ function openCfOptimizedForHostname(hostname){
   cfOptimizedSingleHostname = hostname;
   $('#cfOptimizedModalTitle').text('CF 优选解析');
   $('#cfOptimizedConfirmBtn').text('确定');
+  renderCfOptimizedTargetOptions();
 
-  loadCfOptimizedTargetsFromApi(function(){
-    renderCfOptimizedTargetOptions();
-
-    resolveTxtTargets(hostname, '', function(targets){
-      var dnsDomain = (targets && targets.length) ? (targets[0].domain_name || '未知域名') : '未知域名';
-      batchCfOptimizedData = [{row: {hostname: hostname}, hostname: hostname, targets: targets, dnsDomain: dnsDomain}];
-      var dnsGroups = {};
-      dnsGroups[dnsDomain] = [{row: {hostname: hostname}, hostname: hostname, targets: targets, dnsDomain: dnsDomain}];
-      renderCfOptimizedDnsGroups(dnsGroups, true);
-      $("#modal-cf-optimized").modal('show');
-    });
+  resolveTxtTargets(hostname, '', function(targets){
+    var dnsDomain = (targets && targets.length) ? (targets[0].domain_name || '未知域名') : '未知域名';
+    batchCfOptimizedData = [{row: {hostname: hostname}, hostname: hostname, targets: targets, dnsDomain: dnsDomain}];
+    var dnsGroups = {};
+    dnsGroups[dnsDomain] = [{row: {hostname: hostname}, hostname: hostname, targets: targets, dnsDomain: dnsDomain}];
+    renderCfOptimizedDnsGroups(dnsGroups, true);
+    $("#modal-cf-optimized").modal('show');
   });
 }
 

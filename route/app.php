@@ -134,6 +134,9 @@ Route::group(function () {
     Route::post('/optimizeip/batch/pull', 'optimizeipbatch/pull');
     Route::post('/optimizeip/batch/create', 'optimizeipbatch/create');
     Route::post('/optimizeip/tasks/batch_edit', 'optimizeipbatch/batch_edit_tasks');
+    Route::post('/optimizeip/tasks/pending_ids', 'optimizeipbatch/pending_task_ids');
+    Route::post('/optimizeip/tasks/batch_run', 'optimizeipbatch/batch_run_tasks');
+    Route::post('/optimizeip/tasks/target_search', 'optimizeipbatch/target_search');
     Route::post('/optimizeip/queryapi', 'optimizeip/queryapi');
     Route::post('/optimizeip/opiplist/data', 'optimizeip/opiplist_data');
     Route::get('/optimizeip/opiplist', 'optimizeip/opiplist');

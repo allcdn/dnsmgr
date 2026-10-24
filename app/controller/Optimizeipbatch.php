@@ -4,6 +4,7 @@ namespace app\controller;
 
 use app\BaseController;
 use app\service\CloudflareEnhanceService;
+use app\service\OptimizeService;
 use Exception;
 use think\facade\Db;
 use think\facade\View;
@@ -294,6 +295,123 @@ class Optimizeipbatch extends BaseController
 
             $affected = Db::name('optimizeip')->whereIn('id', $ids)->update($data);
             return json(['code' => 0, 'msg' => '批量修改成功，共更新 ' . intval($affected) . ' 个任务']);
+        } catch (Exception $e) {
+            return json(['code' => -1, 'msg' => $e->getMessage()]);
+        }
+    }
+
+    public function pending_task_ids()
+    {
+        if (!checkPermission(2)) return json(['code' => -1, 'msg' => '无权限']);
+
+        try {
+            $type = input('post.type/d', 1);
+            $kw = trim((string)input('post.kw', '', 'trim'));
+            $select = Db::name('optimizeip')->alias('A')->where('A.status', 0);
+
+            if ($kw !== '') {
+                if ($type == 2) {
+                    $select->whereLike('A.remark', '%' . $kw . '%');
+                } else {
+                    $domainIds = Db::name('domain')->whereLike('name', '%' . $kw . '%')->column('id');
+                    if (!empty($domainIds)) {
+                        $select->where(function ($query) use ($kw, $domainIds) {
+                            $query->whereLike('A.rr', '%' . $kw . '%')->whereOr('A.did', 'in', $domainIds);
+                        });
+                    } else {
+                        $select->whereLike('A.rr', '%' . $kw . '%');
+                    }
+                }
+            }
+
+            $ids = array_map('intval', $select->order('A.id', 'asc')->column('A.id'));
+            return json([
+                'code' => 0,
+                'data' => [
+                    'ids' => $ids,
+                    'total' => count($ids),
+                ],
+            ]);
+        } catch (Exception $e) {
+            return json(['code' => -1, 'msg' => $e->getMessage()]);
+        }
+    }
+
+    public function batch_run_tasks()
+    {
+        if (!checkPermission(2)) return json(['code' => -1, 'msg' => '无权限']);
+
+        try {
+            $ids = input('post.ids/a', []);
+            $ids = array_values(array_unique(array_filter(array_map('intval', (array)$ids), function ($id) {
+                return $id > 0;
+            })));
+            if (empty($ids)) throw new Exception('请先选择要更新的任务');
+            if (count($ids) > 50) throw new Exception('单次最多执行 50 个任务');
+
+            if (function_exists('set_time_limit')) {
+                @set_time_limit(0);
+            }
+            if (function_exists('ignore_user_abort')) {
+                @ignore_user_abort(true);
+            }
+
+            $result = (new OptimizeService(null, null, null, true))->execute_selected($ids);
+            $msg = '批量手动更新完成：成功 ' . $result['success'] . ' 个，失败 ' . $result['failed'] . ' 个';
+            if ($result['skipped'] > 0) {
+                $msg .= '，跳过 ' . $result['skipped'] . ' 个不存在的任务';
+            }
+            return json([
+                'code' => 0,
+                'msg' => $msg,
+                'data' => $result,
+            ]);
+        } catch (Exception $e) {
+            return json(['code' => -1, 'msg' => $e->getMessage()]);
+        }
+    }
+
+    public function target_search()
+    {
+        if (!checkPermission(2)) return json(['code' => -1, 'msg' => '无权限']);
+
+        try {
+            $keyword = trim((string)input('post.kw', '', 'trim'));
+            if (mb_strlen($keyword) < 2) {
+                return json(['code' => 0, 'data' => ['rows' => []]]);
+            }
+
+            $rows = Db::name('optimizeip')->alias('A')
+                ->join('domain D', 'A.did = D.id')
+                ->where('A.active', 1)
+                ->where('A.cdn_type', 1)
+                ->where(function ($query) use ($keyword) {
+                    $like = '%' . $keyword . '%';
+                    $query->whereLike('A.rr', $like)
+                        ->whereOr('D.name', 'like', $like)
+                        ->whereOr('A.remark', 'like', $like);
+                })
+                ->field('A.id,A.rr,A.remark,D.name domain')
+                ->order('A.id', 'desc')
+                ->limit(20)
+                ->select()->toArray();
+
+            $targets = [];
+            $seen = [];
+            foreach ($rows as $row) {
+                $rr = trim((string)$row['rr']);
+                $domain = trim((string)$row['domain']);
+                $value = $rr === '@' ? $domain : ($rr . '.' . $domain);
+                if ($value === '' || $value === '.' || isset($seen[$value])) continue;
+                $seen[$value] = true;
+                $targets[] = [
+                    'id' => intval($row['id']),
+                    'value' => $value,
+                    'label' => trim((string)($row['remark'] ?? '')) ?: $value,
+                ];
+            }
+
+            return json(['code' => 0, 'data' => ['rows' => $targets]]);
         } catch (Exception $e) {
             return json(['code' => -1, 'msg' => $e->getMessage()]);
         }
