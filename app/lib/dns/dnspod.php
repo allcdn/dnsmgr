@@ -92,24 +92,27 @@ class dnspod implements DnsInterface
         $data = $this->send_request($action, $param);
         if ($data) {
             $list = [];
-            foreach ($data['RecordList'] as $row) {
+            $recordList = isset($data['RecordList']) && is_array($data['RecordList']) ? $data['RecordList'] : [];
+            foreach ($recordList as $row) {
+                if (!is_array($row)) continue;
                 //if($row['Name'] == '@' && $row['Type'] == 'NS') continue;
                 $list[] = [
-                    'RecordId' => $row['RecordId'],
+                    'RecordId' => $row['RecordId'] ?? null,
                     'Domain' => $this->domain,
-                    'Name' => $row['Name'],
-                    'Type' => $this->convertTypeId($row['Type']),
-                    'Value' => $row['Value'],
-                    'Line' => $row['LineId'],
-                    'TTL' => $row['TTL'],
-                    'MX' => $row['MX'],
-                    'Status' => $row['Status'] == 'ENABLE' ? '1' : '0',
-                    'Weight' => $row['Weight'],
-                    'Remark' => $row['Remark'],
-                    'UpdateTime' => $row['UpdatedOn'],
+                    'Name' => $row['Name'] ?? '@',
+                    'Type' => $this->convertTypeId($row['Type'] ?? ''),
+                    'Value' => $row['Value'] ?? '',
+                    'Line' => $row['LineId'] ?? '',
+                    'TTL' => $row['TTL'] ?? null,
+                    'MX' => $row['MX'] ?? null,
+                    'Status' => ($row['Status'] ?? '') === 'ENABLE' ? '1' : '0',
+                    'Weight' => $row['Weight'] ?? null,
+                    'Remark' => $row['Remark'] ?? null,
+                    'UpdateTime' => $row['UpdatedOn'] ?? '',
                 ];
             }
-            return ['total' => $data['RecordCountInfo']['TotalCount'], 'list' => $list];
+            $total = $data['RecordCountInfo']['TotalCount'] ?? count($list);
+            return ['total' => intval($total), 'list' => $list];
         } elseif ($this->error == '记录列表为空。' || $this->error == 'No records on the list.') {
             return ['total' => 0, 'list' => []];
         }
