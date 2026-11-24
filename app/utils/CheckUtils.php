@@ -20,31 +20,24 @@ class CheckUtils
         if (str_starts_with($urlarr['host'], '[') && str_ends_with($urlarr['host'], ']')) {
             $urlarr['host'] = substr($urlarr['host'], 1, -1);
         }
-        if (!empty($ip) && !filter_var($urlarr['host'], FILTER_VALIDATE_IP)) {
-            if (!filter_var($ip, FILTER_VALIDATE_IP)) {
-                $ip = gethostbyname($ip);
-            }
-            if (!empty($ip) && filter_var($ip, FILTER_VALIDATE_IP)) {
-                $port = $urlarr['port'] ?? ($urlarr['scheme'] == 'https' ? 443 : 80);
-                $resolve = $urlarr['host'] . ':' . $port . ':' . $ip;
-            }
-        }
-
         $options = [
             'timeout' => $timeout,
             'connect_timeout' => $timeout,
+            'allow_redirects' => false, // 以主站自身的 2xx/3xx 判定健康，不探测跳转目的地
             'verify' => false,
             'headers' => [
                 'User-Agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36'
             ],
             'http_errors' => false // 不抛出异常
         ];
-        // 处理解析
-        if (!empty($resolve)) {
-            $options['curl'] = [
-                CURLOPT_DNS_USE_GLOBAL_CACHE => false,
-                CURLOPT_RESOLVE => [$resolve]
-            ];
+        if (!empty($ip) && !filter_var($urlarr['host'], FILTER_VALIDATE_IP)) {
+            // 仅更换连接目标，保留检测 URL 的 Host、SNI 和端口。代理请求也要探测主线路。
+            if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6)) {
+                $ip = '['.$ip.']';
+            } elseif (str_contains($ip, ':')) {
+                return ['status' => false, 'errmsg' => 'Invalid primary host', 'usetime' => 0];
+            }
+            $options['curl'] = [CURLOPT_CONNECT_TO => ['::'.$ip.':']];
         }
         // 处理代理
         if ($proxy) {

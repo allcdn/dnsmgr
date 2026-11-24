@@ -49,6 +49,7 @@ class Dmtask extends Command
         \Co\run(function () {
             $date = date("Ymd");
             $count = config_get('run_count', null, true) ?? 0;
+            $running = [];
             while (true) {
                 sleep(1);
                 if ($date != date("Ymd")) {
@@ -56,15 +57,20 @@ class Dmtask extends Command
                     $date = date("Ymd");
                 }
 
-                $rows = Db::name('dmtask')->where('checknexttime', '<=', time())->where('active', 1)->order('id', 'ASC')->select();
-                foreach ($rows as $row) {
-                    \go(function () use ($row) {
+                $query = Db::name('dmtask')->where('checknexttime', '<=', time())->where('active', 1);
+                // DNS 请求可能超过检测间隔；不要用旧状态并发执行同一条策略。
+                if ($running) $query->whereNotIn('id', array_keys($running));
+                foreach ($query->order('id', 'ASC')->select() as $row) {
+                    \go(function () use ($row, &$running) {
+                        $running[$row['id']] = true;
                         try {
                             (new TaskRunner())->execute($row);
                         } catch (\Swoole\ExitException $e) {
                             echo $e->getStatus() . "\n";
                         } catch (Exception $e) {
                             echo $e->__toString() . "\n";
+                        } finally {
+                            unset($running[$row['id']]);
                         }
                     });
                     Db::name('dmtask')->where('id', $row['id'])->update([
